@@ -1,0 +1,128 @@
+{
+  "name": "E-Commerce Anomaly Detection & Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Daily Cron Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "id": "cron-trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH daily_metrics AS (SELECT order_date, SUM(revenue) AS daily_revenue, COUNT(*) AS daily_orders FROM orders GROUP BY order_date), with_moving_avg AS (SELECT order_date, daily_revenue, daily_orders, AVG(daily_revenue) OVER (ORDER BY order_date ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING) AS ma_7d_revenue FROM daily_metrics) SELECT order_date, daily_revenue, ma_7d_revenue, ROUND(((daily_revenue - ma_7d_revenue) / NULLIF(ma_7d_revenue, 0)) * 100, 2) AS deviation_pct, CASE WHEN daily_revenue < ma_7d_revenue * 0.7 THEN 'REVENUE_DROP' WHEN daily_revenue > ma_7d_revenue * 1.5 THEN 'REVENUE_SPIKE' ELSE NULL END AS anomaly_type FROM with_moving_avg WHERE ma_7d_revenue IS NOT NULL AND (daily_revenue < ma_7d_revenue * 0.7 OR daily_revenue > ma_7d_revenue * 1.5) ORDER BY order_date DESC LIMIT 10;"
+      },
+      "name": "Check Anomalies (PostgreSQL)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "id": "postgres-query",
+      "credentials": {
+        "postgres": "ecommerce_db"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "IF Anomalies Detected",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "id": "if-anomalies"
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@ecommerce-analytics.com",
+        "toEmail": "analytics-team@company.com",
+        "subject": "[ALERT] E-Commerce Anomaly Detected - {{ $now.toFormat('yyyy-MM-dd') }}",
+        "text": "Hello,\n\nAn anomaly was detected in your e-commerce sales data:\n\n{{ $json.anomaly_type }}\nDate: {{ $json.order_date }}\nDaily Revenue: ${{ $json.daily_revenue }}\n7-Day Average: ${{ $json.ma_7d_revenue }}\nDeviation: {{ $json.deviation_pct }}%\n\nRecommended Actions:\n- Check for operational issues (downtime, outages)\n- Review marketing campaigns\n- Contact customer support for feedback\n\nFull details: [Link to Power BI Dashboard]\nIncident ID: INC-{{ $now.toFormat('yyyyMMdd') }}-001\n\n---\nAutomated E-Commerce Analytics"
+      },
+      "name": "Send Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [850, 200],
+      "id": "send-email",
+      "credentials": {
+        "smtp": "email_smtp"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "anomaly_log",
+        "columns": "detected_at, anomaly_type, order_date, deviation_pct, severity",
+        "additionalFields": {}
+      },
+      "name": "Log Incident to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [850, 400],
+      "id": "log-incident",
+      "credentials": {
+        "postgres": "ecommerce_db"
+      }
+    }
+  ],
+  "connections": {
+    "Daily Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Anomalies (PostgreSQL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Anomalies (PostgreSQL)": {
+      "main": [
+        [
+          {
+            "node": "IF Anomalies Detected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Anomalies Detected": {
+      "main": [
+        [
+          {
+            "node": "Send Email Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Incident to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null
+}
